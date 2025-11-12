@@ -643,8 +643,233 @@ jobs:
         if-no-files-found: error
       if: ${{ env.skip_artifact_upload != 'true' }}
 
+  make_android_libyaml_matrix:
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix_json: ${{ steps.make_matrix.outputs.matrix_json }}
+    steps:
+    - uses: actions/checkout@v4
+    - name: make a matrix
+      id: make_matrix
+      uses: ./.github/actions/dynamatrix
+      with:
+        matrix_yaml: |
+          include:
+          - { arch: arm64-v8a }
+          - { arch: armeabi-v7a }
+          - { arch: x86_64, omit: ${{ env.skip_ci_redundant_jobs }} }
+          - { arch: x86, omit: ${{ env.skip_ci_redundant_jobs }} }
+
+  android_libyaml:
+    needs: [make_android_libyaml_matrix]
+    name: libyaml android ${{ matrix.arch }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.make_android_libyaml_matrix.outputs.matrix_json) }}
+    steps:
+    - name: Check cached libyaml state
+      id: cached_libyaml
+      uses: actions/cache@v4
+      with:
+        path: libyaml
+        key: libyaml_android_${{ matrix.arch }}_${{ env.LIBYAML_REF }}
+
+    - name: Checkout pyyaml
+      uses: actions/checkout@v4
+      if: steps.cached_libyaml.outputs.cache-hit != 'true'
+
+    - name: Setup Android NDK
+      if: steps.cached_libyaml.outputs.cache-hit != 'true'
+      uses: nttld/setup-ndk@v1
+      with:
+        ndk-version: r26d
+        add-to-path: true
+
+    - name: Build libyaml for Android
+      if: steps.cached_libyaml.outputs.cache-hit != 'true'
+      run: |
+        set -eux
+        
+        # Map cibuildwheel arch names to Android ABI names
+        case "${{ matrix.arch }}" in
+          arm64-v8a) ANDROID_ABI=arm64-v8a; ANDROID_ARCH=aarch64 ;;
+          armeabi-v7a) ANDROID_ABI=armeabi-v7a; ANDROID_ARCH=armv7a ;;
+          x86_64) ANDROID_ABI=x86_64; ANDROID_ARCH=x86_64 ;;
+          x86) ANDROID_ABI=x86; ANDROID_ARCH=i686 ;;
+        esac
+        
+        # Clone libyaml
+        git config --global advice.detachedHead false
+        git clone --branch "$LIBYAML_REF" "$LIBYAML_REPO" libyaml
+        cd libyaml
+        git reset --hard "$LIBYAML_REF"
+        
+        # Set up Android NDK toolchain
+        export ANDROID_NDK_HOME=$ANDROID_NDK_ROOT
+        export TOOLCHAIN=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64
+        export TARGET=${ANDROID_ARCH}-linux-android
+        export API=21
+        export AR=$TOOLCHAIN/bin/llvm-ar
+        export CC=$TOOLCHAIN/bin/${TARGET}${API}-clang
+        export AS=$CC
+        export CXX=$TOOLCHAIN/bin/${TARGET}${API}-clang++
+        export LD=$TOOLCHAIN/bin/ld
+        export RANLIB=$TOOLCHAIN/bin/llvm-ranlib
+        export STRIP=$TOOLCHAIN/bin/llvm-strip
+        
+        # Bootstrap and configure
+        ./bootstrap
+        ./configure --host=$TARGET --disable-dependency-tracking --with-pic --enable-shared=no
+        
+        # Build
+        make
+        
+        cd ..
+
+    - name: ensure output is world readable
+      run: >
+        sudo chmod -R a+r ./libyaml/
+      if: steps.cached_libyaml.outputs.cache-hit != 'true'
+
+  make_android_pyyaml_matrix:
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix_json: ${{ steps.make_matrix.outputs.matrix_json }}
+    steps:
+    - uses: actions/checkout@v4
+    - name: make a matrix
+      id: make_matrix
+      uses: ./.github/actions/dynamatrix
+      with:
+        matrix_yaml: |
+          include:
+          ### Android arm64-v8a jobs
+          - spec: cp39-android_arm64-v8a
+            arch: arm64-v8a
+            omit: ${{ env.skip_ci_redundant_jobs }}
+
+          - spec: cp310-android_arm64-v8a
+            arch: arm64-v8a
+            omit: ${{ env.skip_ci_redundant_jobs }}
+
+          - spec: cp311-android_arm64-v8a
+            arch: arm64-v8a
+            omit: ${{ env.skip_ci_redundant_jobs }}
+
+          - spec: cp312-android_arm64-v8a
+            arch: arm64-v8a
+            omit: ${{ env.skip_ci_redundant_jobs }}
+
+          - spec: cp313-android_arm64-v8a
+            arch: arm64-v8a
+
+          ### Android armeabi-v7a jobs
+          - spec: cp39-android_armeabi-v7a
+            arch: armeabi-v7a
+            omit: ${{ env.skip_ci_redundant_jobs }}
+
+          - spec: cp310-android_armeabi-v7a
+            arch: armeabi-v7a
+            omit: ${{ env.skip_ci_redundant_jobs }}
+
+          - spec: cp311-android_armeabi-v7a
+            arch: armeabi-v7a
+            omit: ${{ env.skip_ci_redundant_jobs }}
+
+          - spec: cp312-android_armeabi-v7a
+            arch: armeabi-v7a
+            omit: ${{ env.skip_ci_redundant_jobs }}
+
+          - spec: cp313-android_armeabi-v7a
+            arch: armeabi-v7a
+
+          ### Android x86_64 jobs
+          - spec: cp311-android_x86_64
+            arch: x86_64
+            omit: ${{ env.skip_ci_redundant_jobs }}
+
+          - spec: cp312-android_x86_64
+            arch: x86_64
+            omit: ${{ env.skip_ci_redundant_jobs }}
+
+          ### Android x86 jobs
+          - spec: cp311-android_x86
+            arch: x86
+            omit: ${{ env.skip_ci_redundant_jobs }}
+
+  android_pyyaml:
+    needs: [python_sdist, android_libyaml, make_android_pyyaml_matrix]
+    name: pyyaml ${{matrix.spec}}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.make_android_pyyaml_matrix.outputs.matrix_json) }}
+
+    steps:
+    - name: fetch sdist artifact
+      id: fetch_sdist
+      uses: actions/download-artifact@v4
+      with:
+        name: ${{ needs.python_sdist.outputs.artifact_name }}
+
+    - name: Fetch cached libyaml
+      id: cached_libyaml
+      uses: actions/cache/restore@v4
+      with:
+        path: libyaml
+        key: libyaml_android_${{matrix.arch}}_${{env.LIBYAML_REF}}
+        fail-on-cache-miss: true
+
+    - name: Setup Android NDK
+      uses: nttld/setup-ndk@v1
+      with:
+        ndk-version: r26d
+        add-to-path: true
+
+    - name: Install python
+      uses: actions/setup-python@v5
+      with:
+        python-version: 3.x
+
+    - name: Build/Package
+      id: build
+      env:
+        CIBW_ARCHS_ANDROID: ${{matrix.arch}}
+        CIBW_BUILD: ${{matrix.spec}}
+        CIBW_BUILD_VERBOSITY: 1
+        # Android builds use host python for tests since they're cross-compiled
+        CIBW_TEST_SKIP: "*-android_*"
+      run: |
+        set -eux
+
+        python3 -V
+        python3 -m pip install -U --user 'cibuildwheel>=2.17.0'
+
+        mkdir pyyaml
+
+        tar zxf ${{ steps.fetch_sdist.outputs.download-path }}/pyyaml*.tar.gz/pyyaml*.tar.gz --strip-components=1 -C pyyaml
+
+        cat << 'EOF' > build_config.toml
+        [tool.cibuildwheel.config-settings]
+        pyyaml_build_config='{"force":1, "library_dirs": ["../libyaml/src/.libs"], "include_dirs": ["../libyaml/include"]}'
+        EOF
+
+        python3 -m cibuildwheel --config-file $(pwd)/build_config.toml --platform android --output-dir ./dist ./pyyaml
+
+        echo "artifact_name=$(ls ./dist/)" >> "$GITHUB_OUTPUT"
+        # FIXME: ensure exactly one artifact
+
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ steps.build.outputs.artifact_name }}
+        path: dist/*.whl
+        if-no-files-found: error
+      if: ${{ env.skip_artifact_upload != 'true' }}
+
   merge_artifacts:
-    needs: [python_sdist, macos_pyyaml, linux_pyyaml, windows_pyyaml]
+    needs: [python_sdist, macos_pyyaml, linux_pyyaml, windows_pyyaml, android_pyyaml]
     runs-on: ubuntu-24.04
     steps:
     - name: merge all artifacts
@@ -661,6 +886,7 @@ jobs:
     - linux_pyyaml
     - macos_pyyaml
     - windows_pyyaml
+    - android_pyyaml
     - merge_artifacts
     runs-on: ubuntu-latest
     steps:
